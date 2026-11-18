@@ -1182,10 +1182,14 @@ public abstract class AbstractAccessLogValve extends ValveBase implements Access
                 } else {
                     buf.append(request.getMethod());
                     buf.append(' ');
-                    buf.append(request.getRequestURI());
-                    if (request.getQueryString() != null) {
+                    escapeAndAppend(request.getRequestURI(), buf);
+                    String query = request.getQueryString();
+                    if (query != null) {
                         buf.append('?');
-                        buf.append(request.getQueryString());
+                        // Don't want to write "-" if the query string is empty
+                        if (!query.isEmpty()) {
+                            escapeAndAppend(query, buf);
+                        }
                     }
                     buf.append(' ');
                     buf.append(request.getProtocol());
@@ -1393,7 +1397,10 @@ public abstract class AbstractAccessLogValve extends ValveBase implements Access
             }
             if (query != null) {
                 buf.append('?');
-                buf.append(query);
+                // Don't want to write "-" if the query string is empty
+                if (!query.isEmpty()) {
+                    escapeAndAppend(query, buf);
+                }
             }
         }
     }
@@ -1426,7 +1433,7 @@ public abstract class AbstractAccessLogValve extends ValveBase implements Access
         public void addElement(CharArrayWriter buf, Date date, Request request,
                 Response response, long time) {
             if (request != null) {
-                buf.append(request.getRequestURI());
+                escapeAndAppend(request.getRequestURI(), buf);
             } else {
                 buf.append('-');
             }
@@ -1809,6 +1816,97 @@ public abstract class AbstractAccessLogValve extends ValveBase implements Access
             return new ConnectionStatusElement();
         default:
             return new StringElement("???" + pattern + "???");
+        }
+    }
+
+
+    /*
+     * This method is intended to mimic the escaping performed by httpd and
+     * mod_log_config. Values that may contain characters that would otherwise
+     * allow content (e.g. additional fields of a JSON formatted access log
+     * pattern or additional log lines) to be injected into the access log -
+     * such as the request URI and query string when the Connector attributes
+     * relaxedPathChars and/or relaxedQueryChars are used - are escaped:
+     * - double quote and backslash are escaped with a backslash
+     * - \f, \n, \r and \t use the standard escape sequences
+     * - all other control characters, delete and characters above 127 are
+     *   written as \\uXXXX
+     * A null or empty value is written as '-'.
+     */
+    protected static void escapeAndAppend(String input, CharArrayWriter dest) {
+        if (input == null || input.isEmpty()) {
+            dest.append('-');
+            return;
+        }
+
+        int len = input.length();
+        // As long as we don't encounter chars that need escaping,
+        // we only remember start and length of that string part.
+        // "next" is the start of the string part containing these chars,
+        // "current - 1" is its end. So writing from "next" with length
+        // "current - next" writes that part.
+        // We write that part whenever we find a character to escape and the
+        // unchanged and unwritten string part is not empty.
+        int next = 0;
+        char c;
+        for (int current = 0; current < len; current++) {
+            c = input.charAt(current);
+            // Fast path
+            if (c >= 32 && c < 127) {
+                // special case " etc.
+                switch (c) {
+                case '\\':  // dec 92
+                    // Write unchanged string parts
+                    if (current > next) {
+                        dest.write(input, next, current - next);
+                    }
+                    next = current + 1;
+                    dest.append("\\\\");
+                    break;
+                case '\"':  // dec 34
+                    // Write unchanged string parts
+                    if (current > next) {
+                        dest.write(input, next, current - next);
+                    }
+                    next = current + 1;
+                    dest.append("\\\"");
+                    break;
+                // Don't output individual unchanged chars,
+                // write the sub string only when the first char to encode
+                // is encountered plus at the end.
+                default:
+                }
+            // Control (1-31), delete (127) or above 127
+            } else {
+                // Write unchanged string parts
+                if (current > next) {
+                    dest.write(input, next, current - next);
+                }
+                next = current + 1;
+                switch (c) {
+                // Standard escapes for some control chars
+                case '\f':  // dec 12
+                    dest.append("\\f");
+                    break;
+                case '\n':  // dec 10
+                    dest.append("\\n");
+                    break;
+                case '\r':  // dec 13
+                    dest.append("\\r");
+                    break;
+                case '\t':  // dec 09
+                    dest.append("\\t");
+                    break;
+                // Unicode escape \\uXXXX
+                default:
+                    dest.append("\\u");
+                    dest.append(String.format("%04x", Integer.valueOf(c)));
+                }
+            }
+        }
+        // Write remaining unchanged string parts
+        if (len > next) {
+            dest.write(input, next, len - next);
         }
     }
 }

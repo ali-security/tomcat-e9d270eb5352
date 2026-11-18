@@ -16,6 +16,7 @@
  */
 package org.apache.catalina.valves;
 
+import java.io.CharArrayWriter;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -90,5 +91,91 @@ public class TestAccessLogValve {
 
     private String generateExpected(SimpleDateFormat sdf, long secs) {
         return sdf.format(new Date(secs * 1000));
+    }
+
+    @Test
+    public void testEscapeAndAppendNull() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend(null, buf);
+        Assert.assertEquals("-", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendEmpty() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("", buf);
+        Assert.assertEquals("-", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendNormal() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("/path/to/resource", buf);
+        Assert.assertEquals("/path/to/resource", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendNewline() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("line1\nline2", buf);
+        Assert.assertEquals("line1\\nline2", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendCarriageReturn() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("line1\rline2", buf);
+        Assert.assertEquals("line1\\rline2", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendTab() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("col1\tcol2", buf);
+        Assert.assertEquals("col1\\tcol2", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendBackslash() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("path\\file", buf);
+        Assert.assertEquals("path\\\\file", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendDoubleQuote() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("say \"hello\"", buf);
+        Assert.assertEquals("say \\\"hello\\\"", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendCRLFInjection() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend(
+                "/path HTTP/1.1\r\n200 OK\r\nInjected: header", buf);
+        Assert.assertEquals(
+                "/path HTTP/1.1\\r\\n200 OK\\r\\nInjected: header", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendControlChar() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("before\u0001after", buf);
+        Assert.assertEquals("before\\u0001after", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendFormFeed() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("a\fb", buf);
+        Assert.assertEquals("a\\fb", buf.toString());
+    }
+
+    @Test
+    public void testEscapeAndAppendNonAscii() {
+        CharArrayWriter buf = new CharArrayWriter();
+        AbstractAccessLogValve.escapeAndAppend("/path/\u00e9file", buf);
+        Assert.assertEquals("/path/\\u00e9file", buf.toString());
     }
 }
