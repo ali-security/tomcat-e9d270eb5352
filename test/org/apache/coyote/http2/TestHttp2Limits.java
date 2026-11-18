@@ -165,7 +165,7 @@ public class TestHttp2Limits extends Http2TestBase {
         // 500ms per frame write delay to give server a chance to process the
         // stream reset and the connection reset before the request is fully
         // sent.
-        doTestHeaderLimits(1, 32*1024, 1024, 500, FailureMode.CONNECTION_RESET);
+        doTestHeaderLimits(1, 32*1024, 1024, 500, FailureMode.STREAM_RESET_THEN_CONNECTION_RESET);
     }
 
 
@@ -187,6 +187,134 @@ public class TestHttp2Limits extends Http2TestBase {
     public void testHeaderLimits10x512k() throws Exception {
         // Bug 60232
         doTestHeaderLimits(10, 512*1024, FailureMode.CONNECTION_RESET);
+    }
+
+
+    @Test
+    public void testHeaderLimits20x32WithLimit10ResetBeforeEndOfHeaders() throws Exception {
+        // Header count limit exceeded in a HEADERS frame without END_HEADERS
+        doTestHeaderLimitsResetBeforeEndOfHeaders(20, 32, -1, 10,
+                Constants.DEFAULT_MAX_HEADER_SIZE);
+    }
+
+
+    @Test
+    public void testHeaderLimits3x1024WithLimit2048ResetBeforeEndOfHeaders() throws Exception {
+        // Header size limit exceeded in a HEADERS frame without END_HEADERS
+        doTestHeaderLimitsResetBeforeEndOfHeaders(3, 1024, -1,
+                Constants.DEFAULT_MAX_HEADER_COUNT, 2 * 1024);
+    }
+
+
+    @Test
+    public void testHeaderLimits1x12kin1kChunksResetBeforeEndOfHeaders() throws Exception {
+        // Header size limit exceeded in a CONTINUATION frame without
+        // END_HEADERS
+        doTestHeaderLimitsResetBeforeEndOfHeaders(1, 12*1024, 1024,
+                Constants.DEFAULT_MAX_HEADER_COUNT, Constants.DEFAULT_MAX_HEADER_SIZE);
+    }
+
+
+    /*
+     * CVE-2024-24549
+     *
+     * Once a header limit has been exceeded the stream must be reset at the end
+     * of the frame where the limit was exceeded rather than only once the
+     * client has sent the complete header block. The client sends the header
+     * block without the final frame (the one with END_HEADERS) and expects
+     * the stream reset regardless.
+     */
+    private void doTestHeaderLimitsResetBeforeEndOfHeaders(int headerCount, int headerSize,
+            int maxHeaderPayloadSize, int maxHeaderCount, int maxHeaderSize) throws Exception {
+
+        // Build the custom headers
+        List<String[]> customHeaders = new ArrayList<>();
+        StringBuilder headerValue = new StringBuilder(headerSize);
+        // Does not need to be secure
+        Random r = new Random();
+        for (int i = 0; i < headerSize; i++) {
+            // Random lower case characters
+            headerValue.append((char) ('a' + r.nextInt(26)));
+        }
+        String v = headerValue.toString();
+        for (int i = 0; i < headerCount; i++) {
+            customHeaders.add(new String[] {"X-TomcatTest" + i, v});
+        }
+
+        enableHttp2();
+
+        http2Protocol.setMaxHeaderCount(maxHeaderCount);
+        http2Protocol.setMaxHeaderSize(maxHeaderSize);
+
+        configureAndStartWebApplication();
+        openClientConnection();
+        doHttpUpgrade();
+        sendClientPreface();
+        validateHttp2InitialResponse();
+
+        if (maxHeaderPayloadSize == -1) {
+            maxHeaderPayloadSize = output.getMaxFrameSize();
+        }
+
+        byte[] frameHeader = new byte[9];
+        ByteBuffer headersPayload = ByteBuffer.allocate(200 + (int) (customHeaders.size() *
+                customHeaders.iterator().next()[1].length() * 1.2));
+
+        populateHeadersPayload(headersPayload, customHeaders, "/simple");
+
+        // Write only full size frames and never set END_HEADERS. Any trailing
+        // partial frame is withheld.
+        int frameCount = Math.max(1, headersPayload.limit() / maxHeaderPayloadSize);
+        int written = 0;
+        for (int i = 0; i < frameCount; i++) {
+            int thisTime = Math.min(maxHeaderPayloadSize, headersPayload.limit() - written);
+            ByteUtil.setThreeBytes(frameHeader, 0, thisTime);
+            if (i == 0) {
+                frameHeader[3] = FrameType.HEADERS.getIdByte();
+                // Flags. End of stream
+                frameHeader[4] = 0x01;
+            } else {
+                frameHeader[3] = FrameType.CONTINUATION.getIdByte();
+                // No flags
+                frameHeader[4] = 0x00;
+            }
+            ByteUtil.set31Bits(frameHeader, 5, 3);
+            writeFrame(frameHeader, headersPayload, written, thisTime);
+            written += thisTime;
+        }
+
+        if (frameCount == 1) {
+            // The limit was exceeded in the HEADERS frame. The stream must be
+            // reset without waiting for any CONTINUATION frames so a new
+            // request may be sent straight away. If the server is still waiting
+            // for the end of the headers the new request triggers a connection
+            // error instead.
+            sendSimpleGetRequest(5);
+            parser.readFrame(true);
+            Assert.assertEquals("3-RST-[11]\n", output.getTrace());
+        } else {
+            // The limit was exceeded in a CONTINUATION frame. The stream must
+            // be reset even though END_HEADERS has not been received.
+            parser.readFrame(true);
+            Assert.assertEquals("3-RST-[11]\n", output.getTrace());
+
+            // Complete the header block so the HPACK state remains consistent
+            // and the connection can be re-used.
+            int left = headersPayload.limit() - written;
+            ByteUtil.setThreeBytes(frameHeader, 0, left);
+            frameHeader[3] = FrameType.CONTINUATION.getIdByte();
+            // Flags. End of headers
+            frameHeader[4] = 0x04;
+            ByteUtil.set31Bits(frameHeader, 5, 3);
+            writeFrame(frameHeader, headersPayload, written, left);
+
+            sendSimpleGetRequest(5);
+        }
+
+        // The connection must still be usable
+        output.clearTrace();
+        readSimpleGetResponse();
+        Assert.assertEquals(getSimpleResponseTrace(5), output.getTrace());
     }
 
 
@@ -283,6 +411,21 @@ public class TestHttp2Limits extends Http2TestBase {
             Assert.assertNull(e);
             break;
         }
+        case STREAM_RESET_THEN_CONNECTION_RESET: {
+            // Expect a stream reset
+            // On some platform / Connector combinations the TCP connection close
+            // will be processed before the client gets a chance to read the
+            // connection close frame which will trigger an
+            // IOException when we try to read the frame.
+            try {
+                parser.readFrame(true);
+                Assert.assertEquals("3-RST-[11]\n", output.getTrace());
+                output.clearTrace();
+            } catch (IOException ioe) {
+                // Expected on some platforms
+            }
+        }
+            //$FALL-THROUGH$
         case CONNECTION_RESET: {
             // This message uses i18n and needs to be used in a regular
             // expression (since we don't know the connection ID). Generate the
@@ -468,6 +611,65 @@ public class TestHttp2Limits extends Http2TestBase {
     }
 
 
+    /*
+     * CVE-2024-24549
+     *
+     * The trailer count limit is exceeded in a trailer HEADERS frame that does
+     * not have END_HEADERS set. The stream must be reset at the end of that
+     * frame rather than once the trailer header block is complete. A new
+     * request is sent straight away. If the server is still waiting for the
+     * end of the trailer headers the new request triggers a connection error
+     * rather than the stream reset.
+     */
+    @Test
+    public void testPostWithTrailerHeadersCount0ResetBeforeEndOfHeaders() throws Exception {
+        enableHttp2();
+
+        http2Protocol.setAllowedTrailerHeaders(TRAILER_HEADER_NAME);
+        http2Protocol.setMaxTrailerCount(0);
+
+        configureAndStartWebApplication();
+        openClientConnection();
+        doHttpUpgrade();
+        sendClientPreface();
+        validateHttp2InitialResponse();
+
+        byte[] headersFrameHeader = new byte[9];
+        ByteBuffer headersPayload = ByteBuffer.allocate(128);
+        byte[] dataFrameHeader = new byte[9];
+        ByteBuffer dataPayload = ByteBuffer.allocate(256);
+        byte[] trailerFrameHeader = new byte[9];
+        ByteBuffer trailerPayload = ByteBuffer.allocate(256);
+
+        buildPostRequest(headersFrameHeader, headersPayload, false, dataFrameHeader, dataPayload,
+                null, trailerFrameHeader, trailerPayload, 3);
+
+        // Clear the END_HEADERS flag on the trailers
+        trailerFrameHeader[4] = (byte) (trailerFrameHeader[4] & ~0x04);
+
+        // Write the headers
+        writeFrame(headersFrameHeader, headersPayload);
+        // Body
+        writeFrame(dataFrameHeader, dataPayload);
+        // Trailers (incomplete)
+        writeFrame(trailerFrameHeader, trailerPayload);
+        // New request
+        sendSimpleGetRequest(5);
+
+        // NIO2 can sometimes send window updates depending timing
+        skipWindowSizeFrames();
+
+        // Async I/O can sometimes result in a stream closed reset before
+        // the enhance your calm reset
+        if ("3-RST-[5]\n".equals(output.getTrace())) {
+            output.clearTrace();
+            parser.readFrame(true);
+        }
+
+        Assert.assertEquals("3-RST-[11]\n", output.getTrace());
+    }
+
+
     private void doTestPostWithTrailerHeaders(int maxTrailerCount, int maxTrailerSize,
             FailureMode failMode) throws Exception {
         enableHttp2();
@@ -536,6 +738,10 @@ public class TestHttp2Limits extends Http2TestBase {
             Assert.assertEquals("3-RST-[11]\n", output.getTrace());
             break;
         }
+        case STREAM_RESET_THEN_CONNECTION_RESET: {
+            Assert.fail("Not used");
+            break;
+        }
         case CONNECTION_RESET: {
             // NIO2 can sometimes send window updates depending timing
             skipWindowSizeFrames();
@@ -558,7 +764,7 @@ public class TestHttp2Limits extends Http2TestBase {
         NONE,
         STREAM_RESET,
         CONNECTION_RESET,
-
+        STREAM_RESET_THEN_CONNECTION_RESET,
     }
 
 
