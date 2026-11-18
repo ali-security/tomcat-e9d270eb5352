@@ -35,8 +35,25 @@ public abstract class Authenticator {
      * @param UserProperties The user information
      * @return The auth header
      * @throws AuthenticationException When an error occurs
+     *
+     * @deprecated Use {@link #getAuthorization(String, String, String, Map)}
      */
-    public abstract String getAuthorization(String requestUri, String WWWAuthenticate,
+    @Deprecated
+    public String getAuthorization(String requestUri, String WWWAuthenticate,
+            Map<String, Object> UserProperties) throws AuthenticationException {
+        return getAuthorization("GET", requestUri, WWWAuthenticate, UserProperties);
+    }
+
+    /**
+     * Generate the authentication header that will be sent to the server.
+     * @param method The request method
+     * @param requestUri The request URI
+     * @param WWWAuthenticate The server auth challenge
+     * @param UserProperties The user information
+     * @return The auth header
+     * @throws AuthenticationException When an error occurs
+     */
+    public abstract String getAuthorization(String method, String requestUri, String WWWAuthenticate,
             Map<String, Object> UserProperties) throws AuthenticationException;
 
     /**

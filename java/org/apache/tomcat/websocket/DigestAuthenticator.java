@@ -35,7 +35,7 @@ public class DigestAuthenticator extends Authenticator {
     private long cNonce;
 
     @Override
-    public String getAuthorization(String requestUri, String WWWAuthenticate,
+    public String getAuthorization(String method, String requestUri, String WWWAuthenticate,
             Map<String, Object> userProperties) throws AuthenticationException {
 
         String userName = (String) userProperties.get(Constants.WS_AUTHENTICATION_USER_NAME);
@@ -73,8 +73,8 @@ public class DigestAuthenticator extends Authenticator {
         challenge.append("uri=\"" + requestUri + "\",");
 
         try {
-            challenge.append("response=\"" + calculateRequestDigest(requestUri, userName, password,
-                    realm, nonce, messageQop, algorithm) + "\",");
+            challenge.append("response=\"" + calculateRequestDigest(method, requestUri, userName,
+                    password, realm, nonce, messageQop, algorithm) + "\",");
         }
 
         catch (NoSuchAlgorithmException e) {
@@ -83,7 +83,9 @@ public class DigestAuthenticator extends Authenticator {
         }
 
         challenge.append("algorithm=" + algorithm + ",");
-        challenge.append("opaque=\"" + opaque + "\",");
+        if (opaque != null) {
+            challenge.append("opaque=\"" + opaque + "\",");
+        }
 
         if (!messageQop.isEmpty()) {
             challenge.append("qop=\"" + messageQop + "\"");
@@ -95,8 +97,8 @@ public class DigestAuthenticator extends Authenticator {
 
     }
 
-    private String calculateRequestDigest(String requestUri, String userName, String password,
-            String realm, String nonce, String qop, String algorithm)
+    private String calculateRequestDigest(String method, String requestUri, String userName,
+            String password, String realm, String nonce, String qop, String algorithm)
             throws NoSuchAlgorithmException {
 
         StringBuilder preDigest = new StringBuilder();
@@ -113,7 +115,7 @@ public class DigestAuthenticator extends Authenticator {
          * digest-uri-value ":" H(entity-body) since we do not have an entity-body, A2 =
          * Method ":" digest-uri-value for auth and auth_int
          */
-        String A2 = "GET:" + requestUri;
+        String A2 = method + ":" + requestUri;
 
         preDigest.append(encodeMD5(A1));
         preDigest.append(':');

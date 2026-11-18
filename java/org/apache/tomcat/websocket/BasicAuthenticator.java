@@ -30,7 +30,7 @@ public class BasicAuthenticator extends Authenticator {
     public static final String charsetparam = "charset";
 
     @Override
-    public String getAuthorization(String requestUri, String WWWAuthenticate,
+    public String getAuthorization(String method, String requestUri, String WWWAuthenticate,
             Map<String, Object> userProperties) throws AuthenticationException {
 
         String userName = (String) userProperties.get(Constants.WS_AUTHENTICATION_USER_NAME);

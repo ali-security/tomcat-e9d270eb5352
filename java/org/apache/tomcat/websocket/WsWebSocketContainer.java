@@ -364,6 +364,9 @@ public class WsWebSocketContainer implements WebSocketContainer, BackgroundProce
 
             if (httpResponse.status != 101) {
                 if(isRedirectStatus(httpResponse.status)){
+                    // HTTP redirect. Authentication either successful or not required.
+                    userProperties.remove(Constants.AUTHORIZATION_HEADER_NAME);
+
                     List<String> locationHeader =
                             httpResponse.getHandshakeResponse().getHeaders().get(
                                     Constants.LOCATION_HEADER_NAME);
@@ -420,7 +423,7 @@ public class WsWebSocketContainer implements WebSocketContainer, BackgroundProce
                     }
 
                     String authScheme = wwwAuthenticateHeaders.get(0).split("\\s+", 2)[0];
-                    String requestUri = new String(request.array(), StandardCharsets.ISO_8859_1)
+                    String authenticationUri = new String(request.array(), StandardCharsets.ISO_8859_1)
                             .split("\\s", 3)[1];
 
                     Authenticator auth = AuthenticatorFactory.getAuthenticator(authScheme);
@@ -432,7 +435,7 @@ public class WsWebSocketContainer implements WebSocketContainer, BackgroundProce
                     }
 
                     userProperties.put(Constants.AUTHORIZATION_HEADER_NAME, auth.getAuthorization(
-                            requestUri, wwwAuthenticateHeaders.get(0), userProperties));
+                            "GET", authenticationUri, wwwAuthenticateHeaders.get(0), userProperties));
 
                     return connectToServerRecursive(endpoint, clientEndpointConfiguration, path, redirectSet);
 
@@ -441,6 +444,9 @@ public class WsWebSocketContainer implements WebSocketContainer, BackgroundProce
                             Integer.toString(httpResponse.status)));
                 }
             }
+            // HTTP upgrade successful. Authentication either successful or not required.
+            userProperties.remove(Constants.AUTHORIZATION_HEADER_NAME);
+
             HandshakeResponse handshakeResponse = httpResponse.getHandshakeResponse();
             clientEndpointConfiguration.getConfigurator().afterResponse(handshakeResponse);
 
