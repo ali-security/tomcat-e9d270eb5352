@@ -25,6 +25,7 @@ import java.security.PrivilegedExceptionAction;
 import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 import org.apache.coyote.ActionCode;
@@ -71,6 +72,7 @@ class Stream extends AbstractNonZeroStream implements HeaderEmitter {
 
     private final Http2UpgradeHandler handler;
     private final WindowAllocationManager allocationManager = new WindowAllocationManager(this);
+    private final AtomicBoolean removedFromActiveCount = new AtomicBoolean(false);
 
     // State machine would be too much overhead
     private int headerState = HEADER_STATE_START;
@@ -666,9 +668,13 @@ class Stream extends AbstractNonZeroStream implements HeaderEmitter {
                     log.debug(sm.getString("stream.reset.send", getConnectionId(), getIdAsString(),
                             se.getError()));
                 }
+                boolean active = state.isActive();
                 state.sendReset();
                 cancelAllocationRequests();
                 handler.sendStreamReset(se);
+                if (active) {
+                    handler.decrementActiveRemoteStreamCount(this);
+                }
             } catch (IOException ioe) {
                 ConnectionException ce = new ConnectionException(
                         sm.getString("stream.reset.fail"), Http2Error.PROTOCOL_ERROR);
@@ -745,6 +751,20 @@ class Stream extends AbstractNonZeroStream implements HeaderEmitter {
 
     StreamException getResetException() {
         return streamOutputBuffer.reset;
+    }
+
+
+    int decrementAndGetActiveRemoteStreamCount() {
+        /*
+         * Protect against mis-counting of active streams. This method should only be called once per stream but since
+         * the count of active streams is used to enforce the maximum concurrent streams limit, make sure each stream is
+         * only removed from the active count exactly once.
+         */
+        if (removedFromActiveCount.compareAndSet(false, true)) {
+            return handler.activeRemoteStreamCount.decrementAndGet();
+        } else {
+            return handler.activeRemoteStreamCount.get();
+        }
     }
 
 

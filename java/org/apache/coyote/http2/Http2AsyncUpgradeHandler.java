@@ -138,10 +138,21 @@ public class Http2AsyncUpgradeHandler extends Http2UpgradeHandler {
         ByteUtil.set31Bits(rstFrame, 5, se.getStreamId());
         // Payload
         ByteUtil.setFourBytes(rstFrame, 9, se.getError().getCode());
+        Stream stream = null;
+        boolean active = false;
+        try {
+            stream = getStream(se.getStreamId(), false);
+            active = stream != null && stream.isActive();
+        } catch (ConnectionException e) {
+            // Stream not found - nothing to decrement
+        }
         socketWrapper.write(BlockingMode.SEMI_BLOCK, protocol.getWriteTimeout(),
                 TimeUnit.MILLISECONDS, null, SocketWrapperBase.COMPLETE_WRITE, errorCompletion,
                 ByteBuffer.wrap(rstFrame));
         handleAsyncException();
+        if (active) {
+            decrementActiveRemoteStreamCount(stream);
+        }
     }
 
 
@@ -212,7 +223,7 @@ public class Http2AsyncUpgradeHandler extends Http2UpgradeHandler {
             header[4] = FLAG_END_OF_STREAM;
             stream.sentEndOfStream();
             if (!stream.isActive()) {
-                setConnectionTimeoutForStreamCount(activeRemoteStreamCount.decrementAndGet());
+                decrementActiveRemoteStreamCount(stream);
             }
         }
         if (writeable) {
@@ -315,7 +326,7 @@ public class Http2AsyncUpgradeHandler extends Http2UpgradeHandler {
                 header[4] = FLAG_END_OF_STREAM;
                 sendfile.stream.sentEndOfStream();
                 if (!sendfile.stream.isActive()) {
-                    setConnectionTimeoutForStreamCount(activeRemoteStreamCount.decrementAndGet());
+                    decrementActiveRemoteStreamCount(sendfile.stream);
                 }
             }
             if (writeable) {
@@ -376,7 +387,7 @@ public class Http2AsyncUpgradeHandler extends Http2UpgradeHandler {
                 header[4] = FLAG_END_OF_STREAM;
                 sendfile.stream.sentEndOfStream();
                 if (!sendfile.stream.isActive()) {
-                    setConnectionTimeoutForStreamCount(activeRemoteStreamCount.decrementAndGet());
+                    decrementActiveRemoteStreamCount(sendfile.stream);
                 }
             }
             if (writeable) {

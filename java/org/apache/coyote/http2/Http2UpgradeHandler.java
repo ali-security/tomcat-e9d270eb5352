@@ -432,6 +432,10 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
         }
     }
 
+    protected void decrementActiveRemoteStreamCount(Stream stream) {
+        setConnectionTimeoutForStreamCount(stream.decrementAndGetActiveRemoteStreamCount());
+    }
+
 
     private void setConnectionTimeout(long connectionTimeout) {
         this.connectionTimeout = connectionTimeout;
@@ -547,8 +551,19 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
         ByteUtil.setFourBytes(rstFrame, 9, se.getError().getCode());
 
         synchronized (socketWrapper) {
+            Stream stream = null;
+            boolean active = false;
+            try {
+                stream = getStream(se.getStreamId(), false);
+                active = stream != null && stream.isActive();
+            } catch (ConnectionException e) {
+                // Stream not found - nothing to decrement
+            }
             socketWrapper.write(true, rstFrame, 0, rstFrame.length);
             socketWrapper.flush(true);
+            if (active) {
+                decrementActiveRemoteStreamCount(stream);
+            }
         }
     }
 
@@ -761,7 +776,7 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
             header[4] = FLAG_END_OF_STREAM;
             stream.sentEndOfStream();
             if (!stream.isActive()) {
-                setConnectionTimeoutForStreamCount(activeRemoteStreamCount.decrementAndGet());
+                decrementActiveRemoteStreamCount(stream);
             }
         }
         if (writeable) {
@@ -1091,7 +1106,7 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
     }
 
 
-    private Stream getStream(int streamId, boolean unknownIsError) throws ConnectionException {
+    Stream getStream(int streamId, boolean unknownIsError) throws ConnectionException {
         Integer key = Integer.valueOf(streamId);
         AbstractStream result = streams.get(key);
         if (result instanceof Stream) {
@@ -1479,7 +1494,7 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
             Stream stream = (Stream) abstractNonZeroStream;
             stream.receivedEndOfStream();
             if (!stream.isActive()) {
-                setConnectionTimeoutForStreamCount(activeRemoteStreamCount.decrementAndGet());
+                decrementActiveRemoteStreamCount(stream);
             }
         }
     }
@@ -1506,6 +1521,7 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
             Stream stream = getStream(streamId, false);
             if (stream == null) {
                 stream = createRemoteStream(streamId);
+                activeRemoteStreamCount.incrementAndGet();
             }
             if (streamId < maxActiveRemoteStreamId) {
                 throw new ConnectionException(sm.getString("upgradeHandler.stream.old",
@@ -1593,8 +1609,8 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
             if (stream.isActive()) {
                 if (stream.receivedEndOfHeaders()) {
 
-                    if (localSettings.getMaxConcurrentStreams() < activeRemoteStreamCount.incrementAndGet()) {
-                        setConnectionTimeoutForStreamCount(activeRemoteStreamCount.decrementAndGet());
+                    if (localSettings.getMaxConcurrentStreams() < activeRemoteStreamCount.get()) {
+                        decrementActiveRemoteStreamCount(stream);
                         // Ignoring maxConcurrentStreams increases the overhead count
                         increaseOverheadCount();
                         throw new StreamException(sm.getString("upgradeHandler.tooManyRemoteStreams",
@@ -1631,7 +1647,7 @@ class Http2UpgradeHandler extends AbstractStream implements InternalHttpUpgradeH
             boolean active = stream.isActive();
             stream.receiveReset(errorCode);
             if (active) {
-                activeRemoteStreamCount.decrementAndGet();
+                decrementActiveRemoteStreamCount(stream);
             }
         }
     }
