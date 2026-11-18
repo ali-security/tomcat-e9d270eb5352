@@ -1596,8 +1596,23 @@
       </fileset>
     </txt2html>
   </target>
+  <target name="seal-test" depends="test-compile" unless="${seal.skip.tests}">
+    <mkdir dir="${test.reports}" />
+    <junit printsummary="yes" fork="yes" dir="." haltonfailure="true">
+      <classpath>
+        <pathelement location="${test.classes}"/>
+        <pathelement location="${junit.jar}"/>
+        <pathelement location="${hamcrest.jar}"/>
+        <path refid="compile.classpath" />
+        <path refid="tomcat.classpath" />
+      </classpath>
+      <formatter type="plain" usefile="false" />
+      <test name="org.apache.tomcat.util.json.TestJSONFilter" />
+    </junit>
+  </target>
+
   <target name="embed-jars" description="Create experimental embedded jars"
-    depends="build-manifests,setup-bnd,compile,package" >
+    depends="build-manifests,setup-bnd,compile,package,seal-test" >
 
     <mkdir dir="${tomcat.embed}" />
 
